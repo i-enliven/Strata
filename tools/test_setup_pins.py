@@ -26,6 +26,20 @@ import setup  # noqa: E402
 
 SHA = re.compile(r"/resolve/[0-9a-f]{40}/")
 
+_ARM = None
+
+
+def setUpModule():
+    # the engine tests here fetch and keep a ready-made engine, which the releases publish for x86 only; an arm64
+    # host takes the "compile it here" branch first (docs/SPARK.md)
+    global _ARM
+    _ARM = mock.patch.object(setup, "ARM64", False)
+    _ARM.start()
+
+
+def tearDownModule():
+    _ARM.stop()
+
 
 class Response(io.BytesIO):
     def __init__(self, body=b"", status=200):

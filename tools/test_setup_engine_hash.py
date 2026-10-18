@@ -48,6 +48,21 @@ def sha_of(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
+_ARM = None
+
+
+def setUpModule():
+    # every test here asks what a PC that can fetch a ready-made engine does; the releases carry one for x86 only,
+    # so an arm64 host takes the "compile it here" branch before any of it runs (docs/SPARK.md)
+    global _ARM
+    _ARM = mock.patch.object(setup, "ARM64", False)
+    _ARM.start()
+
+
+def tearDownModule():
+    _ARM.stop()
+
+
 class WhereTheHashComesFrom(unittest.TestCase):
     """`release_of` and `is_local`: which base names a published release, and which is the user's own disk."""
 

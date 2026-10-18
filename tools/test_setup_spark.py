@@ -9,7 +9,9 @@ from __future__ import annotations
 import contextlib
 import io
 import sys
+import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -98,6 +100,36 @@ class GpuWithoutReportedMemory(unittest.TestCase):
         g = setup.nvidia_apply_uma({"name": "Some vGPU", "arch": "89", "mem_na": True, "integrated": False,
                                     "vram_gb": 0.0}, ram=64.0)
         self.assertFalse(g.get("uma"))
+
+
+class NoPrebuiltEngineOnArm(unittest.TestCase):
+    def test_the_arm64_host_does_not_probe_for_a_ready_made_engine(self):
+        # the releases carry strata-linux-x64.zip and nothing for arm64; get_prebuilt's HEAD probe only waits
+        def no_network(*a, **kw):
+            raise AssertionError("setup reached the network on arm64")
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup, "engine_dir", lambda toolkit=13: Path(d) / "engine"), \
+                mock.patch.object(setup, "ARM64", True), \
+                mock.patch.object(setup.urllib.request, "urlopen", no_network), \
+                contextlib.redirect_stdout(out):
+            self.assertIsNone(setup.get_prebuilt(setup.PREBUILT_URL, {"arch": "121"}, "gpu"))
+        self.assertIn("compiled here", out.getvalue())
+
+    def test_an_x86_host_still_looks_for_the_ready_made_engine(self):
+        # the default path AGENTS.md keeps: the probe runs, and its failure is what falls back to compiling
+        seen = []
+
+        def probe(req, *a, **kw):
+            seen.append(req.full_url)
+            raise urllib.error.HTTPError(req.full_url, 404, "not published", {}, None)
+
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup, "engine_dir", lambda toolkit=13: Path(d) / "engine"), \
+                mock.patch.object(setup, "ARM64", False), \
+                mock.patch.object(setup.urllib.request, "urlopen", probe), \
+                contextlib.redirect_stdout(out):
+            self.assertIsNone(setup.get_prebuilt(setup.PREBUILT_URL, {"arch": "120"}, "gpu"))
+        self.assertTrue(seen, "an x86 host must still probe the release asset")
 
 
 class CheckMessagesOnArm(unittest.TestCase):

@@ -3696,10 +3696,20 @@ def rollback_engine(toolkit=13) -> int:
     return 0
 
 
+def prebuilt_asset_available() -> bool:
+    """Whether the releases carry a ready-made engine for this PC.  The assets are strata-linux-x64.zip and
+    strata-windows-x64.zip: an arm64 host has no asset to fetch and compiles the engine here (docs/SPARK.md).
+    build_engine still skips the compile when one is already built for this source and these cards."""
+    return not ARM64
+
+
 def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | None:
     """The ready-made engine in engine/ (kept between runs), or None when there is none for this PC.
     updating: called to replace an installed engine, which starts instead when this fails (no compile).
     toolkit 12: the experimental CUDA 12 engine (CUDA12_ASSET) in engine-cuda12/."""
+    if not prebuilt_asset_available():
+        say("  No ready-made engine for arm64: it is compiled here (docs/SPARK.md)")
+        return None
     eng = engine_dir(toolkit)
     asset = CUDA12_ASSET if int(toolkit) == 12 else PREBUILT_ASSET
     info = eng / "BUILD.json"
