@@ -10,6 +10,10 @@ and the GPU, which is the hardware Strata's expert-cache code already names (`in
 This is a class of machine, not one odd board: DGX Spark, and anything else whose `nvidia-smi` reports no separate
 `memory.total`.
 
+This machine is not hypothetical for the project either. The engine already carries a Spark measurement - "DGX Spark
+IQ3_S 8K prompt 91 -> 1,222 tok/s with sleeping waits" (`src/prefill/prefill.cpp:156`) - and `src/core/expert_cache.cpp:27`
+cites NVIDIA's own *DGX Spark Porting Guide* (section 5.5, "Memory reporting on UMA systems") for the memory figure.
+
 The Metal port already made the decision this port needs: **the GPU does the model's math, and the CPU kernel
 library is reduced to what the engine cannot do without.** The Spark build follows that template, keeping the CUDA
 side whole.
@@ -140,8 +144,10 @@ CMake arm64 branch cannot be reached from the x86 branch.
    the generated compile commands: the x86 flag list must come out unchanged.
 3. HIP and SYCL configured on this branch (AGENTS.md asks for every backend a touched file builds). On an NVIDIA-only
    box that means configure, not run.
-4. A run: Q2_0 first, `--check`, then a chat request, then `tools/strata_bench.py` for the numbers, with the memory
-   pool to itself.
+4. A run: IQ3_S - setup's own recommendation for a machine of this RAM (`RECOMMENDED_SIZES` at `setup.py:2303`) -
+   `--check` first, then a chat request, then `tools/strata_bench.py` for the numbers, with the memory pool to
+   itself. IQ3_S is an 83.6 GB download and wants 62 GB of RAM with a 50.3 GB arena (`setup.py:252-253`); this box
+   has 121 GB and 660 GB of disk.
 
 ## Risks
 
@@ -157,10 +163,17 @@ CMake arm64 branch cannot be reached from the x86 branch.
   be capped or skipped; measure before optimising.
 - **121 GB is not 121 GB while something else runs.** Every number recorded must say what else held memory.
 
-## Calls I made (not the partner's)
+## Decisions
 
-- Target Q2_0 first: it is setup's default and the README's fastest row, and its AVX-512 repack is skipped by its own
-  condition once `cpu_info()` is fixed.
+**Theirs:** target **IQ3_S** (2026-10-17), and stop the other server while testing so the whole memory pool is
+Strata's.
+
+**Mine:**
+
+- IQ3_S needs no CPU i-quant kernel: the i-quant expert rows are computed on the GPU
+  (`src/kernels/cuda/iq_kernels.cu`, `moe_fused_iq.cu`, which cover IQ2_XXS through IQ4_XS including IQ3_S), and the
+  Mac runs IQ3_S with exactly those CPU row kernels stubbed (`metal/src/engine/stubs.cpp:160-166`). The AVX-512
+  repack is Q2_0-only (`setup.py:6795`), so it does not apply.
 - Gate the CMake branch on the host processor rather than a new option, so an arm64 user types nothing new and an
   x86 user cannot reach the new code.
 - Copy the five-line shim into `include/strata/compat/` rather than share `metal/include/metal_compat/`, so the Metal
