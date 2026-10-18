@@ -102,6 +102,18 @@ class GpuWithoutReportedMemory(unittest.TestCase):
         self.assertFalse(g.get("uma"))
 
 
+class CMakeArm64Branch(unittest.TestCase):
+    def test_the_avx_kernel_files_are_built_only_on_an_x86_host(self):
+        cm = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn("STRATA_HOST_X86", cm)
+        for f in ("src/kernels/cpu/expert.cpp", "src/kernels/cpu/q2_avx2.cpp", "src/kernels/cpu/iq_avx512.cpp"):
+            self.assertLess(cm.index("if(STRATA_HOST_X86)"), cm.index(f), f)   # inside the guarded block, not before it
+
+    def test_the_arm64_branch_cannot_be_reached_from_the_x86_branch(self):
+        cm = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn("CMAKE_SYSTEM_PROCESSOR MATCHES", cm)
+
+
 class NoPrebuiltEngineOnArm(unittest.TestCase):
     def test_the_arm64_host_does_not_probe_for_a_ready_made_engine(self):
         # the releases carry strata-linux-x64.zip and nothing for arm64; get_prebuilt's HEAD probe only waits

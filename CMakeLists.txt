@@ -32,6 +32,27 @@ endif()
 # instead of this machine's (Strata's own AVX-512 kernels are per-file and chosen at run time either way), and
 # the MSVC runtime linked in, so no Visual C++ redistributable is needed.
 option(STRATA_PORTABLE "build for other PCs: AVX2 baseline, static MSVC runtime" OFF)
+# The host's instruction set.  Strata's CPU expert kernels are written with AVX-512 / AVX2 / SSE intrinsics; an Arm
+# host - the GB10 in a DGX Spark, Apple's Macs - has neither the instructions nor the headers.  There the CPU library
+# is built from the files that need none, exactly as the Metal port builds them (metal/CMakeLists.txt:100), and the
+# entry points the AVX files would have provided say so at run time (src/kernels/cpu/arm64_unavailable.cpp).  An x86
+# build takes the same lines it took before, in the same order.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|X86|x64)$")
+  set(STRATA_HOST_X86 ON)
+else()
+  set(STRATA_HOST_X86 OFF)
+endif()
+if(NOT STRATA_HOST_X86)
+  # The engine's host loops spin on _mm_pause and raise their flags behind _mm_sfence (graph.cpp, session.cpp,
+  # verify.cpp, mtp.cpp), and pool.cpp does the same.  include/strata/compat carries those two for a host without
+  # immintrin.h, as the Metal port's include does (metal/CMakeLists.txt).  An x86 build never sees this directory.
+  include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/compat)
+  # session.cpp raises its host flag behind _mm_sfence without including the header - on x86 it arrives through another
+  # include.  Rather than edit the shared sources (the Metal port keeps them unchanged too), a non-x86 host is given
+  # the two-intrinsic header up front.  C++ only: nvcc takes its host flags differently.
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-include>
+                      $<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/include/strata/compat/immintrin.h>)
+endif()
 # EXPERIMENTAL, opt-in: an engine for CPUs without AVX2 (#394, #595, #623), compiled on that PC.  ggml-cpu, which then
 # computes every CPU expert row, is built for this floor instead of AVX2 or the build host: "avx" (Sandy/Ivy Bridge:
 # AVX, no FMA/F16C/AVX2) or "none" (SSE4.2 + POPCNT: Nehalem/Westmere).  Strata's own AVX2/AVX-512 kernels stay in the
@@ -1358,11 +1379,20 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_test(NAME batch_groups_test COMMAND batch_groups_test)
 endif()
 
+if(STRATA_HOST_X86)
 add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
             src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp)
 target_include_directories(strata_kernels_cpu PUBLIC include)
+else()
+# the same three files the Metal host library compiles (metal/CMakeLists.txt:100) plus the entry points the AVX
+# files would have exported; include/strata/compat carries the two x86 intrinsics the host loops use
+add_library(strata_kernels_cpu STATIC src/kernels/cpu/pool.cpp src/kernels/cpu/expert_layout.cpp
+            src/kernels/cpu/arm64_unavailable.cpp)
+target_include_directories(strata_kernels_cpu PUBLIC include include/strata/compat)
+endif()
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
 # and the engine picks the kernels at run time (cpu_avx512_ok).
+if(STRATA_HOST_X86)
 if(MSVC)
   set_source_files_properties(src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
   set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
@@ -1372,15 +1402,20 @@ else()
                               PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
   set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
 endif()
+endif()
 # AVX-VNNI (Alder Lake, Sapphire Rapids and later): the AVX-2 expert kernels' vpdpwssd / vpdpbusd copies (q2_avx2.cpp,
 # iq_avx2.cpp; *_rows.inl), taken at run time where cpu_avxvnni_ok().  GCC and Clang compile only those functions with
 # target("avxvnni") - never -mavxvnni on a file, which would let the compiler use it anywhere - and MSVC takes the
 # intrinsics under /arch:AVX2.  A compiler without them (GCC < 11, Clang < 12) builds the files without the copies.
 include(CheckCXXSourceCompiles)
+if(STRATA_HOST_X86)
 if(MSVC)
   set(CMAKE_REQUIRED_FLAGS "/arch:AVX2")
 else()
   set(CMAKE_REQUIRED_FLAGS "-mavx2 -mfma -mf16c")
+endif()
+else()
+  set(CMAKE_REQUIRED_FLAGS "")
 endif()
 check_cxx_source_compiles([=[
 #include <immintrin.h>
@@ -1464,11 +1499,16 @@ if(STRATA_NATIVE_EXPERTS)
   endif()
   # part of strata_kernels_cpu (the pool calls these and they call its CPU probe: one library, so GNU ld's
   # one-pass static linking has no cycle to resolve)
-  target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp
-                                           src/kernels/cpu/iq_avx2.cpp src/kernels/cpu/kq_avx2.cpp
-                                           src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/iq_avx1.cpp
-                                           src/kernels/cpu/nvfp4_avx512.cpp src/kernels/cpu/nvfp4_avx2.cpp)
+  if(STRATA_HOST_X86)
+    target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp
+                                             src/kernels/cpu/iq_avx2.cpp src/kernels/cpu/kq_avx2.cpp
+                                             src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/iq_avx1.cpp
+                                             src/kernels/cpu/nvfp4_avx512.cpp src/kernels/cpu/nvfp4_avx2.cpp)
+  else()
+    target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp)   # ggml-cpu's own row math, portable
+  endif()
   target_include_directories(strata_kernels_cpu PRIVATE third_party/ggml)
+  if(STRATA_HOST_X86)
   if(MSVC)
     set_source_files_properties(src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/nvfp4_avx512.cpp
                                 PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
@@ -1498,6 +1538,7 @@ if(STRATA_NATIVE_EXPERTS)
     # -march=native build host cannot leak AVX2 code into the file that runs on a Sandy Bridge Xeon
     set_source_files_properties(src/kernels/cpu/iq_avx1.cpp PROPERTIES COMPILE_OPTIONS
                                 "-msse4.2;-mavx;-mno-avx2;-mno-fma;-mno-f16c")
+  endif()
   endif()
   set_property(SOURCE src/kernels/cpu/iq_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
   if(STRATA_ISA_FLOOR STREQUAL "avx")
