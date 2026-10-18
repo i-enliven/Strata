@@ -60,6 +60,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 WIN = os.name == "nt"
+ARM64 = platform.machine().lower() in ("aarch64", "arm64")   # the DGX Spark and every other Arm Linux host (docs/SPARK.md)
 # #214: every Hugging Face file comes from a fixed commit of its repository (the `sha` of
 # https://huggingface.co/api/models/<repo> when this was pinned), so a checkout installs the same files on any
 # day.  A revision the repository no longer has falls back to its current files, with a message (download()).
@@ -880,10 +881,16 @@ def cpu_info():
     else:
         try:
             txt = open("/proc/cpuinfo").read()
-            flags = set(re.search(r"^flags\s*:\s*(.*)$", txt, re.M).group(1).split())
-            avx2 = "avx2" in flags
-            avx512 = {"avx512f", "avx512bw", "avx512vl", "avx512_vnni", "avx512vbmi"} <= flags
-            m = re.search(r"^model name\s*:\s*(.*)$", txt, re.M)
+            f = re.search(r"^flags\s*:\s*(.*)$", txt, re.M)
+            if f:
+                flags = set(f.group(1).split())
+                avx2 = "avx2" in flags
+                avx512 = {"avx512f", "avx512bw", "avx512vl", "avx512_vnni", "avx512vbmi"} <= flags
+            elif re.search(r"^(vendor_id|model name)\s*:", txt, re.M):
+                # an x86 cpuinfo that carries no flags line (a VM that strips it): say so rather than promise a
+                # build for a CPU that was never read.  Arm spells the feature list "Features" and is not this.
+                warn("could not read this CPU's flags from /proc/cpuinfo: the engine will not use the AVX kernels")
+            m = re.search(r"^model name\s*:\s*(.*)$", txt, re.M) or re.search(r"^(?:Model|Hardware)\s*:\s*(.*)$", txt, re.M)
             name = m.group(1) if m else name
         except OSError:
             pass
@@ -914,7 +921,10 @@ def _cpuid_floor() -> str:
 def cpu_floor(avx2: bool) -> str:
     """The experimental older-CPU build this PC needs (#394 #595 #623): "" with AVX2 (the normal engine), "avx" (Sandy /
     Ivy Bridge, AMD Bulldozer), "none" (SSE4.2 + POPCNT: Nehalem, Westmere), or "unsupported".  STRATA_ISA_FLOOR=avx|
-    none asks for that build on any PC (testing it on a newer one)."""
+    none asks for that build on any PC (testing it on a newer one).  An Arm host has no floor to pick: the x86 CPU
+    kernels are not built there at all (docs/SPARK.md), so it is "" whatever STRATA_ISA_FLOOR says."""
+    if ARM64:
+        return ""
     forced = os.environ.get("STRATA_ISA_FLOOR", "").strip().lower()
     if forced in ("avx", "none"):
         return forced

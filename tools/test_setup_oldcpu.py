@@ -28,8 +28,13 @@ class FloorTest(unittest.TestCase):
     def setUp(self):
         self.env = mock.patch.dict(os.environ, {"STRATA_ISA_FLOOR": ""})
         self.env.start()
+        # every test here asks what an x86 CPU gets; an Arm host has no instruction floor at all, which
+        # test_setup_spark.CpuFloorOnArm pins.  Pin it off so these read the same on any PC that runs them.
+        self.arm = mock.patch.object(setup, "ARM64", False)
+        self.arm.start()
 
     def tearDown(self):
+        self.arm.stop()
         self.env.stop()
 
     def test_avx2_cpu_gets_the_normal_engine(self):
