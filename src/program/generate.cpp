@@ -3193,6 +3193,10 @@ int main(int argc, char** argv) {
     strata::metal_engine::set_model_shard(o.native_preset.c_str());   // the decode window reads the model GGUF itself
     o.mmap_experts = true;   // ... experts included: no resident copy of them (the GGUF shards in place)
     if (false) {
+#elif defined(__aarch64__)
+    // arm64 (the GB10 in a DGX Spark): every expert runs on the GPU, and the i-quant models' native CPU experts
+    // take ggml-cpu's portable math (src/kernels/cpu/native_expert.cpp).  No AVX check.
+    if (false) {
 #else
     if (!strata::kernels::cpu::cpu_avx2_ok() && isa_floor[0] == '\0') {
 #endif
