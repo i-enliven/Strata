@@ -63,6 +63,66 @@ class CpuWithoutFlagsLine(unittest.TestCase):
         self.assertIn("could not read this CPU's flags", out.getvalue())
 
 
+# nvidia-smi on a GB10: the card is there, its compute capability is there, its memory is not - there is no separate
+# VRAM to report.  This is the real line from the box the port is developed on.
+GB10_NVIDIA_SMI = "0, NVIDIA GB10, [N/A], 12.1, 595.99.02\n"
+
+
+class GpuWithoutReportedMemory(unittest.TestCase):
+    def test_a_card_that_reports_no_memory_is_still_a_card(self):
+        # nvidia-smi on a GB10 answers "[N/A]" for memory.total; float() raised and the row was dropped
+        found = setup.parse_gpu_rows(GB10_NVIDIA_SMI)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["arch"], "121")
+        self.assertTrue(found[0]["mem_na"])
+
+    def test_a_unified_card_is_measured_from_the_ram_it_can_reach(self):
+        g = setup.nvidia_apply_uma({"name": "NVIDIA GB10", "arch": "121", "mem_na": True, "integrated": True,
+                                    "vram_gb": 0.0}, ram=121.0)
+        self.assertTrue(g["uma"])
+        self.assertEqual(g["dedicated_gb"], 0.0)
+        self.assertAlmostEqual(g["vram_gb"], 121.0 - setup.UMA_OS_LEFT_GB, places=6)
+
+    def test_a_unified_card_is_named_as_unified_memory(self):
+        g = setup.nvidia_apply_uma({"name": "NVIDIA GB10", "arch": "121", "mem_na": True, "integrated": True,
+                                    "vram_gb": 0.0}, ram=121.0)
+        self.assertIn("unified memory", setup.nvidia_mem_text(g))
+
+    def test_a_unified_card_adds_nothing_beside_the_ram_in_low_ram_mode(self):
+        # the rule low_ram_vram() already makes for an AMD APU: its shared memory IS the RAM
+        spark = setup.nvidia_apply_uma({"name": "NVIDIA GB10", "arch": "121", "mem_na": True, "integrated": True,
+                                        "vram_gb": 0.0}, ram=121.0)
+        self.assertEqual(setup.low_ram_vram(spark), 0.0)
+
+    def test_a_card_that_reports_no_memory_but_is_not_integrated_is_not_given_the_ram(self):
+        g = setup.nvidia_apply_uma({"name": "Some vGPU", "arch": "89", "mem_na": True, "integrated": False,
+                                    "vram_gb": 0.0}, ram=64.0)
+        self.assertFalse(g.get("uma"))
+
+
+class CheckMessagesOnArm(unittest.TestCase):
+    def test_an_arm_cpu_is_not_reported_as_lacking_avx2(self):
+        # "no AVX2" reads like a CPU too old for Strata; on Arm the x86 CPU kernels are simply not built
+        with mock.patch.object(setup, "ARM64", True):
+            self.assertEqual(setup.cpu_feature_note(False, False), "Arm")
+
+    def test_an_x86_cpu_is_named_by_what_it_has(self):
+        with mock.patch.object(setup, "ARM64", False):
+            self.assertEqual(setup.cpu_feature_note(False, False), "no AVX2")
+            self.assertEqual(setup.cpu_feature_note(True, False), "AVX2")
+            self.assertEqual(setup.cpu_feature_note(True, True), "AVX-512")
+
+    def test_a_unified_gpu_has_no_pcie_link_to_measure(self):
+        # the GB10 sits on the SoC: the probe read "PCIe: 1.0 x1 ... up to ~0 GB/s" and warned about lanes
+        self.assertFalse(setup.pcie_applies({"uma": True}))
+        self.assertTrue(setup.pcie_applies({"vram_gb": 24.0}))
+
+    def test_the_older_cpu_warning_is_not_shown_where_there_is_no_x86_floor(self):
+        # the warning names SSE4.2 and STRATA_ISA_FLOOR, neither of which means anything on Arm
+        src = (ROOT / "setup.py").read_text(encoding="utf-8")
+        self.assertIn("if not avx2 and floor:", src)
+
+
 class CpuFloorOnArm(unittest.TestCase):
     def test_an_arm_host_has_no_x86_instruction_floor(self):
         # cpu_floor() answers "unsupported" for a CPU without AVX2, and main() stops the install on that (setup.py:6356)

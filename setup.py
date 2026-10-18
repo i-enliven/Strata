@@ -918,6 +918,16 @@ def _cpuid_floor() -> str:
         return ""
 
 
+def cpu_feature_note(avx2: bool, avx512: bool) -> str:
+    """How setup names the CPU's vector support in its one-line report.  "no AVX2" is a real finding on an x86 PC
+    (an older-CPU build, docs/INSTALL.md); on Arm the x86 CPU kernels are not built at all, so it is not one."""
+    if avx512:
+        return "AVX-512"
+    if avx2:
+        return "AVX2"
+    return "Arm" if ARM64 else "no AVX2"
+
+
 def cpu_floor(avx2: bool) -> str:
     """The experimental older-CPU build this PC needs (#394 #595 #623): "" with AVX2 (the normal engine), "avx" (Sandy /
     Ivy Bridge, AMD Bulldozer), "none" (SSE4.2 + POPCNT: Nehalem, Westmere), or "unsupported".  STRATA_ISA_FLOOR=avx|
@@ -1004,18 +1014,78 @@ def _cpuid_avx2() -> bool:
         return False
 
 
+def parse_gpu_rows(text: str) -> list:
+    """nvidia-smi's csv rows as dicts.  A row whose memory is not a number - an integrated GB10 (DGX Spark) answers
+    "[N/A]", because it has no separate VRAM to report - keeps its name, compute capability and driver and is marked
+    `mem_na`: it is a card, it just has no memory of its own (docs/SPARK.md)."""
+    found = []
+    for line in text.strip().splitlines():
+        try:
+            idx, name, mem, cc, drv = [x.strip() for x in line.split(",")]
+            g = {"index": int(idx), "name": name, "arch": cc.replace(".", ""), "driver": drv}
+            try:
+                g["vram_gb"] = float(mem) / 1024.0
+            except ValueError:
+                g.update({"vram_gb": 0.0, "mem_na": True})
+            found.append(g)
+        except ValueError:
+            continue
+    return found
+
+
+_CUDA_RT = {}
+
+
+def _cuda_runtime():
+    """The CUDA runtime library, loaded once (None when there is none).  setup has no CUDA binding; this is the one
+    question it asks the runtime, and it asks it the way the engine does (src/core/expert_cache.cpp:33-42)."""
+    if "lib" not in _CUDA_RT:
+        nvcc, ver = find_nvcc()
+        names = []
+        if nvcc and ver:
+            root = Path(nvcc).resolve().parent.parent
+            names += [str(root / "lib64" / f"libcudart.so.{ver[0]}"), f"libcudart.so.{ver[0]}"]
+        names += ["libcudart.so.13", "libcudart.so.12", "libcudart.so"]
+        lib = None
+        for so in names:
+            try:
+                lib = ctypes.CDLL(so)
+                break
+            except OSError:
+                continue
+        _CUDA_RT["lib"] = lib
+    return _CUDA_RT["lib"]
+
+
+def device_is_integrated(index: int) -> bool | None:
+    """cudaDevAttrIntegrated (18) for one device, or None when the runtime could not be asked: the GPU shares its
+    memory with the CPUs, which is what makes its reported memory meaningless (docs/SPARK.md)."""
+    lib = _cuda_runtime()
+    if lib is None:
+        return None
+    v = ctypes.c_int(0)
+    try:
+        if lib.cudaDeviceGetAttribute(ctypes.byref(v), 18, int(index)) != 0:
+            return None
+    except (OSError, AttributeError):
+        return None
+    return v.value != 0
+
+
 def gpus():
     """Every NVIDIA GPU, numbered as nvidia-smi numbers them (by PCI bus, the order the engine is told to use)."""
     s = out(["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap,driver_version",
              "--format=csv,noheader,nounits"])
-    found = []
-    for line in s.strip().splitlines():
-        try:
-            idx, name, mem, cc, drv = [x.strip() for x in line.split(",")]
-            found.append({"index": int(idx), "name": name, "vram_gb": float(mem) / 1024.0, "arch": cc.replace(".", ""),
-                          "driver": drv})
-        except ValueError:
-            continue
+    found = parse_gpu_rows(s)
+    for g in found:
+        if g.get("mem_na"):                      # only such a card asks the runtime: an x86 PC sees no change
+            integrated = device_is_integrated(g["index"])
+            if integrated is None:
+                warn("could not ask the CUDA runtime whether this GPU is integrated: assuming unified memory, "
+                     "because nvidia-smi reports no memory for it")
+                integrated = True
+            g["integrated"] = integrated
+            nvidia_apply_uma(g)
     return found
 
 
@@ -1182,6 +1252,12 @@ def gpu_rank(g):
     return (-int(g["arch"]), -round(g["vram_gb"]), g["index"])
 
 
+def pcie_applies(g) -> bool:
+    """Whether there is a PCIe link from this card to measure.  An integrated device - the GB10 in a DGX Spark -
+    sits on the SoC: the probe reads a phantom x1 link and warns about lanes that do not exist (docs/SPARK.md)."""
+    return not g.get("uma")
+
+
 def gpu_name(g) -> str:
     return f"GPU {g['index']} ({g['name']}, {g['vram_gb']:.0f} GB)"
 
@@ -1190,7 +1266,7 @@ def gpu_table(found) -> None:
     say("  Your NVIDIA GPUs:")
     for g in found:
         p = gpu_problem(g)
-        say(f"    GPU {g['index']}: {g['name']}, {g['vram_gb']:.0f} GB VRAM - " + ("can be used" if p is None else p))
+        say(f"    GPU {g['index']}: {g['name']}, {nvidia_mem_text(g)} - " + ("can be used" if p is None else p))
 
 
 def together_ok(found) -> list:
@@ -2303,6 +2379,28 @@ def amd_mem_text(g) -> str:
     if g.get("uma"):
         return (f"unified memory: {g['dedicated_gb']:.1f} GB BIOS carve-out + {g['shared_gb']:.0f} GB shared with the "
                 f"RAM, {g['vram_gb']:.0f} GB usable by the GPU")
+    return f"{g['vram_gb']:.0f} GB VRAM"
+
+
+def nvidia_apply_uma(g: dict, ram: float | None = None) -> dict:
+    """An integrated NVIDIA device - the GB10 in a DGX Spark - has one memory pool for its CPUs and its GPU: it has
+    no separate VRAM, so nvidia-smi reports none.  What the GPU can use is therefore the system RAM less what the OS
+    keeps, which is the figure the engine itself uses for the expert cache
+    (include/strata/core/expert_cache.hpp:76) and the same 6 GiB UMA_OS_LEFT_GB leaves.  dedicated_gb is 0: the
+    shared part IS the RAM the experts live in, so it is not extra room beside it (low_ram_vram)."""
+    if g.get("uma") or not (g.get("mem_na") and g.get("integrated")):
+        return g
+    ram = ram_gb() if ram is None else ram
+    shared = max(0.0, ram - UMA_OS_LEFT_GB)
+    g.update({"uma": True, "dedicated_gb": 0.0, "shared_gb": shared, "vram_gb": shared})
+    return g
+
+
+def nvidia_mem_text(g) -> str:
+    """How setup says an NVIDIA card's memory: "24.0 GB VRAM", or for an integrated device the RAM it reaches."""
+    if g.get("uma"):
+        return (f"unified memory: {g['shared_gb']:.0f} GB shared with the RAM, "
+                f"{g['vram_gb']:.0f} GB usable by the GPU")
     return f"{g['vram_gb']:.0f} GB VRAM"
 
 
@@ -6313,7 +6411,7 @@ def main() -> int:
         gpu["archs"] = sorted({x["arch"] for x in chosen})  # the engine needs code for every one of them
         if multi:
             ok("GPUs: " + " + ".join(gpu_name(x) for x in chosen) + " together (the model's layers are split across them)")
-        ok(f"GPU: {gpu['name']}, {gpu['vram_gb']:.1f} GB VRAM, compute capability {cc(gpu)}, driver {gpu['driver']}")
+        ok(f"GPU: {gpu['name']}, {nvidia_mem_text(gpu)}, compute capability {cc(gpu)}, driver {gpu['driver']}")
         cuda_tk, why = cuda_choice(gpu["archs"], a.cuda)   # one engine per model: its oldest card decides
         if why:
             (warn if cuda_tk == 13 or str(a.cuda) == "12" else ok)(f"CUDA {cuda_tk}: {why}")
@@ -6348,8 +6446,8 @@ def main() -> int:
     pf = page_file_gb()
     if pf is not None and pf < 4:
         warn(page_file_advice(pf, page_file_setting()))
-    ok(f"CPU: {cpu} ({'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'})")
-    link = None if hip else pcie_link(int(gpu.get("index", 0)))
+    ok(f"CPU: {cpu} ({cpu_feature_note(avx2, avx512)})")
+    link = None if hip or not pcie_applies(gpu) else pcie_link(int(gpu.get("index", 0)))
     if link is not None:
         line, problem = pcie_lines(link)
         ok(line)
@@ -6358,7 +6456,7 @@ def main() -> int:
     floor = cpu_floor(avx2)
     if floor == "unsupported":
         fail("this CPU has neither AVX2 nor SSE4.2; Strata needs at least SSE4.2 (Intel Nehalem, 2008, or newer)")
-    if not avx2:
+    if not avx2 and floor:
         # #394 #595 #623: the ready-made engine is AVX2; an older CPU gets one compiled here, whose CPU experts run on
         # ggml-cpu's kernels for this CPU.  Experimental: measured only on newer CPUs with the older path forced, and by
         # users on a few Xeons.  A warning, not a stop.
