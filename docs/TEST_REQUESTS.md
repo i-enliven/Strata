@@ -15,5 +15,7 @@ This list is edited by the maintainers. An item stays until a report answers it.
 | Pascal (sm_61: Tesla P40, P100, GTX 10 series) | Older cards run on the fp32 path and can behave differently from newer ones | #875, #876 |
 | A Linux host with 32 GB of RAM or less | The expert file tier and the resident mode depend on how much of the model fits in RAM | #1194 |
 | A long soak (an hour or more of back-to-back requests) on a split or resident setup | Shows crashes, drift and heat that a short run does not | #848 |
+| NVIDIA GB10 / DGX Spark with other model sizes (Q2_0, IQ2_XS, NVFP4) | Initial GB10 support was validated only on IQ3_S; verify memory behavior and perf across other quantizations | docs/SPARK.md |
+| NVIDIA GB10 / DGX Spark combined with a discrete PCIe GPU | Test multi-GPU layer split between an integrated SoC GPU and a discrete PCIe card | docs/SPARK.md |
 
 To add a request, open a pull request that adds a row, or tell the maintainers in an issue.

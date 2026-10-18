@@ -68,6 +68,7 @@ Experimental, written and tested by community members on their own machines:
 - **Intel Arc**, built from source on Linux: [Intel Arc](docs/INTEL_ARC.md).
 - **Apple Silicon Macs (M1 to M5)**, built from source by `./setup.sh` (the Metal engine): [Mac](docs/MAC.md).
 - **AMD Ryzen AI Max (Strix Halo)**, built from source on Linux: [Strix Halo](docs/STRIX_HALO.md).
+- **NVIDIA DGX Spark (GB10, sm_121)**, built from source on Linux arm64: [DGX Spark](docs/SPARK.md).
 - **Older processors without AVX2**: they work, but slowly. [Older CPUs](docs/INSTALL.md#older-cpus-experimental).
 
 The full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).

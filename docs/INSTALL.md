@@ -27,6 +27,12 @@ you the first time: Python 3.12 if you have none (for your user account, no admi
 the build tools (Visual Studio Build Tools + CUDA Toolkit on Windows, `build-essential` + CUDA on Ubuntu) and compiles
 the engine for your GPU (asks first; 20-40 minutes once). More: [details](DETAILS.md#before-you-start).
 
+Other supported architectures and community platforms:
+- **NVIDIA DGX Spark (GB10, sm_121, arm64)**: [docs/SPARK.md](SPARK.md)
+- **AMD Ryzen AI Max (Strix Halo, gfx1151)**: [docs/STRIX_HALO.md](STRIX_HALO.md)
+- **Apple Silicon (M1–M5, Metal)**: [docs/MAC.md](MAC.md)
+- **Intel Arc (SYCL)**: [docs/INTEL_ARC.md](INTEL_ARC.md)
+
 ## Windows
 
 1. [Download this project](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or
