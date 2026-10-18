@@ -2226,7 +2226,19 @@ int64_t Prefill::ring_max_slots() {
 int64_t Prefill::ring_slots_for(int64_t chunk) { return ring_slots((size_t) chunk); }
 void Prefill::set_cpu_pool(kernels::cpu::ExpertPool* pool) { cpu_pool_ = pool; }
 void Prefill::arm_cpu_share(bool applies, bool by_default) {
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if defined(__aarch64__)
+    // arm64 (the GB10 in a DGX Spark): this build has no CPU expert kernels.  CMakeLists.txt leaves the AVX files out
+    // of the CPU library on an Arm host, and src/kernels/cpu/arm64_unavailable.cpp stops the engine if one is asked
+    // for, so there is nothing here for a CPU share to hand expert rows to.  The share is not armed; asking for it
+    // with STRATA_PREFILL_CPU_SHARE is answered once rather than ignored.
+    static bool told = false;
+    if (applies && cpu_share_on() && !told) {
+        told = true;
+        std::fprintf(stderr, "prefill: STRATA_PREFILL_CPU_SHARE is set but this build has no CPU expert kernels "
+                             "(docs/SPARK.md): the GPU takes every expert.\n");
+    }
+    (void) by_default;
+#elif !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
     if (applies && by_default && cpu_share_explicit() == -2.0 && !g_share_default) {
         g_share_default = true;
         std::fprintf(stderr, "prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU "
@@ -2236,7 +2248,9 @@ void Prefill::arm_cpu_share(bool applies, bool by_default) {
 #else
     (void) by_default;
 #endif
+#if !defined(__aarch64__)
     if (applies && cpu_share_on()) g_stream_min_share = cpu_share_max();
+#endif
 }
 
 bool Prefill::ring_bytes_enabled() { return ring_bytes_on(); }

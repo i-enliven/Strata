@@ -102,6 +102,19 @@ class GpuWithoutReportedMemory(unittest.TestCase):
         self.assertFalse(g.get("uma"))
 
 
+class CpuShareOnArm(unittest.TestCase):
+    def test_asking_for_the_cpu_share_on_arm64_says_so(self):
+        src = (ROOT / "src" / "prefill" / "prefill.cpp").read_text(encoding="utf-8")
+        self.assertIn("__aarch64__", src[src.index("void Prefill::arm_cpu_share"):][:900])
+        self.assertIn("this build has no CPU expert kernels", src)
+
+    def test_the_share_is_not_armed_on_arm64(self):
+        # setting g_stream_min_share here would hand expert rows to a CPU pool whose kernels stop the engine
+        src = (ROOT / "src" / "prefill" / "prefill.cpp").read_text(encoding="utf-8")
+        body = src[src.index("void Prefill::arm_cpu_share"):src.index("bool Prefill::ring_bytes_enabled")]
+        self.assertIn("#if !defined(__aarch64__)", body)
+
+
 class CMakeArm64Branch(unittest.TestCase):
     def test_the_avx_kernel_files_are_built_only_on_an_x86_host(self):
         cm = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
